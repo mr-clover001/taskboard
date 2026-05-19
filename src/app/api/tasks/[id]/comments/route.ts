@@ -23,7 +23,10 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   const { id: taskId } = await params;
 
-  const task = await prisma.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { projectId: true },
+  });
   if (!task) return notFound("task not found");
 
   const membership = await getProjectMembership(user.id, task.projectId);
@@ -41,12 +44,15 @@ export async function GET(req: NextRequest, { params }: Params) {
 }
 
 export async function POST(req: NextRequest, { params }: Params) {
-  const user = await getCurrentUser(req);
+  const user = await getCurrentUser(req); // Authentication
   if (!user) return unauthorized();
 
   const { id: taskId } = await params;
 
-  const task = await prisma.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { projectId: true },
+  });
   if (!task) return notFound("task not found");
 
   const membership = await getProjectMembership(user.id, task.projectId);
@@ -57,7 +63,8 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const body = await req.json().catch(() => null);
   const parsed = createCommentSchema.safeParse(body);
-  if (!parsed.success) return badRequest("invalid input", parsed.error.flatten());
+  if (!parsed.success)
+    return badRequest("invalid input", parsed.error.flatten());
 
   const comment = await prisma.comment.create({
     data: {
