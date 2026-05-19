@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# Manual setup (without Docker). Requires Node.js 20+ and a running PostgreSQL 15+.
+# Reads DATABASE_URL from .env (copy from .env.example first).
+
+set -e
+
+cd "$(dirname "$0")/.."
+
+echo "==> installing npm dependencies"
+npm install
+
+echo "==> configuring git hooks"
+git config core.hooksPath .git-hooks 2>/dev/null || true
+chmod +x .git-hooks/* 2>/dev/null || true
+
+if [ ! -f .env ]; then
+  echo "==> copying .env.example -> .env (edit DATABASE_URL if needed)"
+  cp .env.example .env
+fi
+
+echo "==> running prisma migrations"
+npx prisma migrate deploy
+
+echo "==> generating prisma client"
+npx prisma generate
+
+echo "==> seeding database"
+npm run db:seed
+
+echo "==> running tests"
+npm test
+
+cat <<EOF
+
+setup complete.
+
+start the app:
+  npm run dev
+
+then visit http://localhost:3000
+
+EOF

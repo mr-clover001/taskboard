@@ -1,0 +1,5 @@
+# Ensure AI conversation logs are tracked as text
+.ai-conversations/** text
+.claude/** text
+.cursor/** text
+.aider.chat.history.md text

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+
+# wait for postgres to accept connections
+ATTEMPTS=0
+until node -e "require('net').createConnection({host:'db',port:5432}).on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" 2>/dev/null; do
+  ATTEMPTS=$((ATTEMPTS+1))
+  if [ $ATTEMPTS -gt 30 ]; then
+    echo "db never became reachable on db:5432" >&2
+    exit 1
+  fi
+  echo "waiting for db…"
+  sleep 1
+done
+
+npx prisma migrate deploy || true
+npx prisma generate || true
+
+exec "$@"

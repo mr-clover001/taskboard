@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskboard
+      POSTGRES_PASSWORD: taskboard
+      POSTGRES_DB: taskboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  web:
+    build: .
+    command: npm run dev
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://taskboard:taskboard@db:5432/taskboard?schema=public
+      JWT_SECRET: dev-secret-change-me
+      NODE_ENV: development
+
+  test:
+    build: .
+    command: npm test
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://taskboard:taskboard@db:5432/taskboard_test?schema=public
+      JWT_SECRET: test-secret
+      NODE_ENV: test
+
+volumes:
+  pgdata:
+  node_modules:
