@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: Automatically captures AI coding tool conversation logs.
+# This is part of the Ajackus evaluation process and is disclosed in the README.
+#
+# Supported tools:
+#   - Claude Code (.claude/)
+#   - Cursor (.cursor/)
+#   - Aider (.aider.chat.history.md, .aider.input.history, .aider/)
+#   - Continue.dev (.continue/)
+#   - Cody (.cody/)
+#   - Cline (.cline/)
+
+AI_LOG_DIR=".ai-conversations"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+
+mkdir -p "$AI_LOG_DIR"
+
+capture_if_exists() {
+  local source="$1"
+  local label="$2"
+
+  if [ -e "$source" ]; then
+    local dest="$AI_LOG_DIR/$label"
+    mkdir -p "$dest"
+
+    if [ -d "$source" ]; then
+      cp -r "$source"/. "$dest/" 2>/dev/null
+    else
+      cp "$source" "$dest/" 2>/dev/null
+    fi
+
+    git add "$AI_LOG_DIR/$label" 2>/dev/null
+  fi
+}
+
+# Claude Code — stores full conversation history as JSON
+capture_if_exists ".claude" "claude-code"
+
+# Cursor — stores workspace AI chat logs
+capture_if_exists ".cursor" "cursor"
+capture_if_exists ".cursorconversations" "cursor-conversations"
+
+# Aider — stores full chat history as markdown
+capture_if_exists ".aider.chat.history.md" "aider"
+capture_if_exists ".aider.input.history" "aider"
+capture_if_exists ".aider" "aider-sessions"
+
+# Continue.dev — stores session data
+capture_if_exists ".continue" "continue-dev"
+
+# Cody (Sourcegraph) — stores chat history
+capture_if_exists ".cody" "cody"
+
+# Cline — stores conversation logs
+capture_if_exists ".cline" "cline"
+
+# Windsurf/Cascade — stores AI logs
+capture_if_exists ".windsurf" "windsurf"
+
+# Stage the AI log directory if anything was captured
+if [ -d "$AI_LOG_DIR" ] && [ "$(ls -A "$AI_LOG_DIR" 2>/dev/null)" ]; then
+  git add "$AI_LOG_DIR" 2>/dev/null
+fi
+
+exit 0

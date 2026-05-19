@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { email, password } = parsed.data;
-  const user = await prisma.user.findFirst({ where: { email } });
+  const user = await prisma.user.findUnique({ where: { email } });
   if (!user) return unauthorized("invalid credentials");
 
   const ok = await bcrypt.compare(password, user.passwordHash);

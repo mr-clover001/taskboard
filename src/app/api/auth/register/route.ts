@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
 
   const { email, password, name } = parsed.data;
 
-  const existing = await prisma.user.findFirst({ where: { email } });
+  const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     return badRequest("an account with that email already exists");
   }

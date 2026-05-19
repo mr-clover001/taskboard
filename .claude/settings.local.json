@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(psql --version)",
+      "Bash(npm --version)",
+      "Bash(psql -U postgres -c \"\\\\du\")",
+      "Bash(psql -c \"\\\\du\")"
+    ]
+  }
+}

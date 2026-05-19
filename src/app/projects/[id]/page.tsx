@@ -4,7 +4,7 @@ import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, getToken } from "@/lib/api-client";
+import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
 import { Header } from "@/components/Header";
 import { StatusColumn } from "@/components/StatusColumn";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -22,6 +22,8 @@ export default function ProjectPage({ params }: PageProps) {
   const [newTitle, setNewTitle] = useState("");
   const [newColumn, setNewColumn] = useState<TaskStatus>("todo");
   const [error, setError] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -58,6 +60,9 @@ export default function ProjectPage({ params }: PageProps) {
     }
   }
 
+  const me = getStoredUser();
+  const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role ?? "viewer";
+
   return (
     <div className="min-h-screen">
       <Header />
@@ -91,6 +96,40 @@ export default function ProjectPage({ params }: PageProps) {
                   owner: {project.owner.name} · {project.memberships.length} members
                 </p>
               </div>
+
+              {(myRole === "admin" || myRole === "member") && (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    onClick={async () => {
+                      setExportStatus("loading");
+                      setExportMsg(null);
+                      try {
+                        const res = await apiFetch<{ exported: number; failed: number }>(
+                          `/api/projects/${id}/export`,
+                          { method: "POST" }
+                        );
+                        setExportStatus("done");
+                        setExportMsg(
+                          `Exported ${res.exported} task${res.exported !== 1 ? "s" : ""} to Airtable` +
+                          (res.failed > 0 ? ` · ${res.failed} failed` : "")
+                        );
+                      } catch (err) {
+                        setExportStatus("error");
+                        setExportMsg(err instanceof Error ? err.message : "export failed");
+                      }
+                    }}
+                    disabled={exportStatus === "loading"}
+                    className="bg-surface border border-border hover:border-accent text-sm font-medium rounded-md px-4 py-2 disabled:opacity-50 transition-colors"
+                  >
+                    {exportStatus === "loading" ? "exporting…" : "export to airtable"}
+                  </button>
+                  {exportMsg && (
+                    <p className={`text-xs ${exportStatus === "error" ? "text-red-400" : "text-green-400"}`}>
+                      {exportMsg}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <section className="bg-surface border border-border rounded-lg p-4 mb-6">
@@ -173,6 +212,7 @@ export default function ProjectPage({ params }: PageProps) {
           task={activeTask}
           projectId={id}
           members={project.memberships}
+          currentUserRole={myRole as "admin" | "member" | "viewer"}
           onClose={() => setActiveTask(null)}
         />
       )}
