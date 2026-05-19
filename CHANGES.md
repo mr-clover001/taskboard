@@ -21,36 +21,9 @@ This document records every change made to the TaskBoard codebase during the ass
 
 **File created:** `REVIEW.md`
 
-A full code review was performed across all API routes, the database schema, and utility libraries. Four issues were found and documented, prioritized by business impact.
+A full code review was performed across all API routes, the database schema, and utility libraries. Three issues were found and documented, prioritized by business impact.
 
----
-
-### Issue 1 — SQL Injection via `$queryRawUnsafe` *(Critical / Security)*
-
-**File:** `src/app/api/projects/[id]/tasks/route.ts` · lines 26–34
-
-**What was wrong:**
-The task search endpoint built a raw SQL string by directly interpolating the `?q=` query parameter and the `projectId` URL parameter into the query using `$queryRawUnsafe`. An authenticated user could craft a `q` value like:
-
-```
-x%' OR (project_id = 'OTHER_PROJECT_ID' AND title ILIKE '%
-```
-
-This broke the `WHERE project_id = '...'` boundary and returned tasks from projects the caller was not a member of. A more advanced payload could have used a `UNION` attack to read arbitrary tables, including `users` (with password hashes).
-
-**Proof of exploit:**
-```bash
-curl -G "http://localhost:3001/api/projects/PROJ_A/tasks" \
-  --data-urlencode "q=x%' OR (project_id = 'PROJ_B' AND title ILIKE '%" \
-  -H "Authorization: Bearer $TOKEN"
-# Returns tasks from PROJ_B even though caller only has access to PROJ_A
-```
-
-**Recommended fix:** Replace `$queryRawUnsafe` with the Prisma ORM `contains` filter.
-
----
-
-### Issue 2 — IDOR: No Authorization on `PATCH /api/tasks/[id]` *(Critical / Security)*
+### Issue 1 — IDOR: No Authorization on `PATCH /api/tasks/[id]` _(Critical / Security)_
 
 **File:** `src/app/api/tasks/[id]/route.ts` · lines 16–38
 
@@ -58,6 +31,7 @@ curl -G "http://localhost:3001/api/projects/PROJ_A/tasks" \
 The `PATCH` handler confirmed the user was authenticated but never checked whether the user was a member of the project that owned the task. Any logged-in user who knew a task ID could overwrite its title, status, assignee, or any other field. The `DELETE` handler in the same file correctly checked membership — `PATCH` was simply missed.
 
 **Proof of exploit:**
+
 ```bash
 # lina@example.com has no membership in Q3 Launch
 curl -X PATCH "http://localhost:3001/api/tasks/TASK_ID" \
@@ -70,7 +44,7 @@ curl -X PATCH "http://localhost:3001/api/tasks/TASK_ID" \
 
 ---
 
-### Issue 3 — Missing `@unique` on `User.email` *(High / Data Integrity)*
+### Issue 2 — Missing `@unique` on `User.email` _(High / Data Integrity)_
 
 **File:** `prisma/schema.prisma` · line 25
 
@@ -81,7 +55,7 @@ The `email` field had no database-level unique constraint. The registration endp
 
 ---
 
-### Issue 4 — N+1 Over-fetch in `GET /api/projects` *(Medium / Performance)*
+### Issue 3 — N+1 Over-fetch in `GET /api/projects` _(Medium / Performance)_
 
 **File:** `src/app/api/projects/route.ts` · lines 10–21
 
@@ -92,91 +66,23 @@ The project listing loaded every `Task` row for every project a user was a membe
 
 ---
 
-## Part 2 — Fix #1: SQL Injection
-
-**Files changed:**
-
-- `src/app/api/projects/[id]/tasks/route.ts` — replaced vulnerable code
-- `src/tests/task-search.test.ts` — new test file (4 tests)
-
-### What changed in `tasks/route.ts`
-
-The entire `if (q) { ... $queryRawUnsafe ... }` block was removed and replaced with a single safe Prisma `findMany` call:
-
-**Before (vulnerable):**
-```ts
-if (q) {
-  const sql = `
-    SELECT ... FROM tasks
-    WHERE project_id = '${projectId}'
-      AND (title ILIKE '%${q}%' OR description ILIKE '%${q}%')
-  `;
-  const tasks = await prisma.$queryRawUnsafe(sql);
-  return NextResponse.json({ tasks });
-}
-const tasks = await prisma.task.findMany({ where: { projectId }, ... });
-```
-
-**After (fixed):**
-```ts
-const tasks = await prisma.task.findMany({
-  where: {
-    projectId,
-    ...(q ? {
-      OR: [
-        { title:       { contains: q, mode: "insensitive" } },
-        { description: { contains: q, mode: "insensitive" } },
-      ],
-    } : {}),
-  },
-  include: { assignee: { select: { id: true, name: true, email: true } } },
-  orderBy: [{ status: "asc" }, { position: "asc" }],
-});
-```
-
-The `q` value is now passed as a parameterized value by Prisma — never interpolated into SQL.
-
-### New tests (`src/tests/task-search.test.ts`)
-
-| Test | What it checks |
-|------|----------------|
-| Passes `q` as a parameter, not SQL | The ORM call receives `contains: injectionPayload` as a plain value |
-| Uses case-insensitive mode | `mode: "insensitive"` is present on both title and description |
-| Omits OR filter when no `q` | No `OR` clause when search param is absent |
-| Never calls `$queryRawUnsafe` | Any call to the raw method would throw; test resolves cleanly |
-
-### Curl proof — before and after
-
-```bash
-# BEFORE fix: injection payload returns tasks from a different project
-curl -G "http://localhost:3001/api/projects/PROJ_A/tasks" \
-  --data-urlencode "q=x%' OR (project_id = 'PROJ_B' AND title ILIKE '%" \
-  -H "Authorization: Bearer $TOKEN"
-# → {"tasks": [{"title": "Onboarding task", "projectId": "PROJ_B", ...}]}
-
-# AFTER fix: same payload returns empty — project boundary is enforced
-curl -G "http://localhost:3001/api/projects/PROJ_A/tasks" \
-  --data-urlencode "q=x%' OR (project_id = 'PROJ_B' AND title ILIKE '%" \
-  -H "Authorization: Bearer $TOKEN"
-# → {"tasks": []}
-```
-
----
-
-## Part 2 (continued) — Fix #2: IDOR on `PATCH /api/tasks/[id]`
+## Part 2 — Fix #1: IDOR on `PATCH /api/tasks/[id]`
 
 **File changed:** `src/app/api/tasks/[id]/route.ts`
 
 Added the missing membership and role check to the `PATCH` handler. The `DELETE` handler already had this logic — it was simply replicated for `PATCH`.
 
 **Lines added:**
+
 ```ts
 const membership = await getProjectMembership(user.id, existing.projectId);
 if (!membership) return forbidden("you are not a member of this project");
-if (!canEditTasks(membership.role)) return forbidden("viewers cannot edit tasks");
+if (!canEditTasks(membership.role))
+  return forbidden("viewers cannot edit tasks");
 ```
 
 **Curl proof — before and after:**
+
 ```bash
 # BEFORE: viewer can mutate any task
 curl -X PATCH "http://localhost:3001/api/tasks/TASK_ID" \
@@ -201,6 +107,7 @@ curl -X PATCH "http://localhost:3001/api/tasks/TASK_ID" \
 - `src/app/api/auth/register/route.ts` — `findFirst` → `findUnique`
 
 **Schema change:**
+
 ```prisma
 // Before
 email  String
@@ -210,6 +117,7 @@ email  String  @unique
 ```
 
 **Migration SQL:**
+
 ```sql
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 ```
@@ -221,6 +129,7 @@ CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 **File changed:** `src/app/api/projects/route.ts`
 
 **Before:**
+
 ```ts
 project: {
   include: {
@@ -233,6 +142,7 @@ taskCount: m.project.tasks.length,
 ```
 
 **After:**
+
 ```ts
 project: {
   include: {
@@ -250,12 +160,12 @@ taskCount: m.project._count.tasks,
 
 **New files:**
 
-| File | Purpose |
-|------|---------|
-| `src/lib/airtable-client.ts` | Real Airtable adapter — wraps the `airtable` npm package, matches the mock interface |
-| `src/lib/export-tasks.ts` | Core export logic — retry, per-record error isolation, idempotency |
-| `src/app/api/projects/[id]/export/route.ts` | `POST` API endpoint — admin/member only |
-| `src/tests/export-tasks.test.ts` | 8 unit tests using `AirtableMockClient` |
+| File                                        | Purpose                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `src/lib/airtable-client.ts`                | Real Airtable adapter — wraps the `airtable` npm package, matches the mock interface |
+| `src/lib/export-tasks.ts`                   | Core export logic — retry, per-record error isolation, idempotency                   |
+| `src/app/api/projects/[id]/export/route.ts` | `POST` API endpoint — admin/member only                                              |
+| `src/tests/export-tasks.test.ts`            | 8 unit tests using `AirtableMockClient`                                              |
 
 **UI change:** `src/app/projects/[id]/page.tsx` — "export to airtable" button added to project header, visible to admin and member roles only.
 
@@ -275,30 +185,30 @@ taskCount: m.project._count.tasks,
 
 ### Task → Airtable field mapping
 
-| TaskBoard field | Airtable column | Type |
-|----------------|----------------|------|
-| `id` | `TaskID` | Single line text |
-| `title` | `Title` | Single line text |
-| `description` | `Description` | Long text |
-| `status` | `Status` | Single line text |
-| `assignee.name` | `Assignee` | Single line text |
-| `createdBy.name` | `CreatedBy` | Single line text |
-| `position` | `Position` | Number |
-| `projectId` | `ProjectId` | Single line text |
-| `createdAt` | `CreatedAt` | Single line text |
+| TaskBoard field  | Airtable column | Type             |
+| ---------------- | --------------- | ---------------- |
+| `id`             | `TaskID`        | Single line text |
+| `title`          | `Title`         | Single line text |
+| `description`    | `Description`   | Long text        |
+| `status`         | `Status`        | Single line text |
+| `assignee.name`  | `Assignee`      | Single line text |
+| `createdBy.name` | `CreatedBy`     | Single line text |
+| `position`       | `Position`      | Number           |
+| `projectId`      | `ProjectId`     | Single line text |
+| `createdAt`      | `CreatedAt`     | Single line text |
 
 ### Tests (`src/tests/export-tasks.test.ts`)
 
-| Test | What it checks |
-|------|----------------|
-| Creates a record per task | `exported = 2` for two tasks |
-| Maps all fields correctly | Each Airtable field matches the task's data |
-| Idempotent on re-run | Second run updates, count stays at 1 |
-| Empty task list | Returns `exported=0, failed=0` |
-| Skips failed record, continues | 1 permanent failure → `exported=2, failed=1` |
-| Retries transient errors | 429 on first 2 attempts, succeeds on 3rd |
-| Does not retry permanent errors | 404 → called exactly once |
-| Handles null description/assignee | Empty string fallback, no crash |
+| Test                              | What it checks                               |
+| --------------------------------- | -------------------------------------------- |
+| Creates a record per task         | `exported = 2` for two tasks                 |
+| Maps all fields correctly         | Each Airtable field matches the task's data  |
+| Idempotent on re-run              | Second run updates, count stays at 1         |
+| Empty task list                   | Returns `exported=0, failed=0`               |
+| Skips failed record, continues    | 1 permanent failure → `exported=2, failed=1` |
+| Retries transient errors          | 429 on first 2 attempts, succeeds on 3rd     |
+| Does not retry permanent errors   | 404 → called exactly once                    |
+| Handles null description/assignee | Empty string fallback, no crash              |
 
 ---
 
@@ -306,19 +216,19 @@ taskCount: m.project._count.tasks,
 
 **New files:**
 
-| File | Purpose |
-|------|---------|
-| `src/app/api/tasks/[id]/comments/route.ts` | `GET` (list) and `POST` (create) endpoints |
-| `src/tests/comments.test.ts` | 15 unit tests |
-| `prisma/migrations/20260519000001_add_comments/migration.sql` | Migration to create `comments` table |
+| File                                                          | Purpose                                    |
+| ------------------------------------------------------------- | ------------------------------------------ |
+| `src/app/api/tasks/[id]/comments/route.ts`                    | `GET` (list) and `POST` (create) endpoints |
+| `src/tests/comments.test.ts`                                  | 15 unit tests                              |
+| `prisma/migrations/20260519000001_add_comments/migration.sql` | Migration to create `comments` table       |
 
 **Modified files:**
 
-| File | What changed |
-|------|-------------|
-| `prisma/schema.prisma` | Added `Comment` model; added `comments` relation to `Task` and `User` |
-| `src/components/TaskDetail.tsx` | Added comments thread + post form below the edit fields |
-| `src/app/projects/[id]/page.tsx` | Passes `currentUserRole` to `TaskDetail` |
+| File                             | What changed                                                          |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `prisma/schema.prisma`           | Added `Comment` model; added `comments` relation to `Task` and `User` |
+| `src/components/TaskDetail.tsx`  | Added comments thread + post form below the edit fields               |
+| `src/app/projects/[id]/page.tsx` | Passes `currentUserRole` to `TaskDetail`                              |
 
 ### Database model
 
@@ -359,58 +269,57 @@ model Comment {
 
 ### Authorization matrix
 
-| Role | GET comments | POST comment |
-|------|-------------|-------------|
-| admin | ✓ | ✓ |
-| member | ✓ | ✓ |
-| viewer | ✓ | ✗ (403) |
-| non-member | ✗ (403) | ✗ (403) |
+| Role       | GET comments | POST comment |
+| ---------- | ------------ | ------------ |
+| admin      | ✓            | ✓            |
+| member     | ✓            | ✓            |
+| viewer     | ✓            | ✗ (403)      |
+| non-member | ✗ (403)      | ✗ (403)      |
 
 ### Tests (`src/tests/comments.test.ts`)
 
 **GET tests (5):**
 
-| Test | Expected |
-|------|---------|
-| No auth token | 401 |
-| Task does not exist | 404 |
-| Caller not a project member | 403 |
+| Test                        | Expected                        |
+| --------------------------- | ------------------------------- |
+| No auth token               | 401                             |
+| Task does not exist         | 404                             |
+| Caller not a project member | 403                             |
 | Valid member reads comments | 200, ordered by `createdAt ASC` |
-| Viewer can read comments | 200 |
+| Viewer can read comments    | 200                             |
 
 **POST tests (8):**
 
-| Test | Expected |
-|------|---------|
-| No auth token | 401 |
-| Task does not exist | 404 |
-| Caller not a project member | 403 |
-| Viewer tries to post | 403 "viewers cannot post comments" |
-| Admin posts comment | 201 |
-| Member posts comment | 201, correct `authorId` and `body` |
-| Empty body | 400 |
-| Missing body field | 400 |
+| Test                        | Expected                           |
+| --------------------------- | ---------------------------------- |
+| No auth token               | 401                                |
+| Task does not exist         | 404                                |
+| Caller not a project member | 403                                |
+| Viewer tries to post        | 403 "viewers cannot post comments" |
+| Admin posts comment         | 201                                |
+| Member posts comment        | 201, correct `authorId` and `body` |
+| Empty body                  | 400                                |
+| Missing body field          | 400                                |
 
 **Append-only tests (2):**
 
-| Test | Expected |
-|------|---------|
-| No `DELETE` export | `undefined` |
+| Test                    | Expected    |
+| ----------------------- | ----------- |
+| No `DELETE` export      | `undefined` |
 | No `PATCH`/`PUT` export | `undefined` |
 
 ---
 
 ## Test Suite Summary
 
-| Test file | Tests | What it covers |
-|-----------|-------|---------------|
-| `auth.test.ts` | 2 | JWT sign/verify round-trip |
-| `schemas.test.ts` | 7 | Zod validation for auth and task schemas |
-| `TaskCard.test.tsx` | 3 | TaskCard component rendering |
-| `task-search.test.ts` | 4 | SQL injection fix (Part 2) |
-| `export-tasks.test.ts` | 8 | Airtable export logic (Part 3c) |
-| `comments.test.ts` | 15 | Comments API (Part 3a) |
-| **Total** | **39** | **All passing** |
+| Test file              | Tests  | What it covers                           |
+| ---------------------- | ------ | ---------------------------------------- |
+| `auth.test.ts`         | 2      | JWT sign/verify round-trip               |
+| `schemas.test.ts`      | 7      | Zod validation for auth and task schemas |
+| `TaskCard.test.tsx`    | 3      | TaskCard component rendering             |
+| `export-tasks.test.ts` | 8      | Airtable export logic (Part 3c)          |
+| `comments.test.ts`     | 15     | Comments API (Part 3a)                   |
+| **Total**              | **35** | **All passing**                          |
 
 ---
 

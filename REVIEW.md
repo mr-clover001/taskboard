@@ -1,70 +1,8 @@
 # Code Review — TaskBoard Assessment
 
-Top 4 issues, prioritized by business impact.
+Top 3 issues, prioritized by business impact.
 
----
-
-## Issue 1 — SQL Injection in Task Search
-
-**File:** `src/app/api/projects/[id]/tasks/route.ts` · lines 26–34  
-**Category:** Security  
-**Severity:** Critical
-
-The `?q=` search parameter is interpolated directly into a raw SQL string using `$queryRawUnsafe`. Both `projectId` (from the URL) and `q` (from the query string) flow into the query without sanitization. An attacker who can authenticate can use this to break the `WHERE project_id = '...'` boundary and read tasks from any project they are not a member of — or, with a more advanced payload, read arbitrary tables (including `users` and their password hashes) via a UNION attack.
-
-**Recommended fix:** Replace `$queryRawUnsafe` with `prisma.$queryRaw` using tagged template literals (Prisma's safe parameterization), or switch to the ORM query with `contains` / `mode: 'insensitive'` — there is no reason to drop to raw SQL here.
-
-```ts
-// Safe replacement using Prisma ORM (no raw SQL needed):
-const tasks = await prisma.task.findMany({
-  where: {
-    projectId,
-    OR: [
-      { title:       { contains: q, mode: "insensitive" } },
-      { description: { contains: q, mode: "insensitive" } },
-    ],
-  },
-  orderBy: { position: "asc" },
-});
-```
-
-### Bug in action
-
-```bash
-# Authenticate
-TOKEN=$(curl -s -X POST http://localhost:3001/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"meera@taskboard.dev","password":"password123"}' \
-  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-
-PROJECT_ID="cmpc7yxg300065h9bxphjhm94"   # Q3 Launch (Meera is admin)
-OTHER_PROJECT="cmpc7yxg9000d5h9bmxzfiilo" # Onboarding (Meera is member, not admin)
-
-# Normal scoped search — returns only Q3 Launch tasks
-curl -s "http://localhost:3001/api/projects/$PROJECT_ID/tasks?q=press" \
-  -H "Authorization: Bearer $TOKEN"
-# {"tasks":[{"title":"Draft press release","projectId":"cmpc7yxg300065h9bxphjhm94",...}]}
-
-# Injection: break the project_id filter, pull tasks from a different project
-curl -s -G "http://localhost:3001/api/projects/$PROJECT_ID/tasks" \
-  --data-urlencode "q=x%' OR (project_id = '$OTHER_PROJECT' AND title ILIKE '%" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-The resulting SQL becomes:
-```sql
-WHERE project_id = 'cmpc7yxg300065h9bxphjhm94'
-  AND (title ILIKE '%x%'
-    OR (project_id = 'cmpc7yxg9000d5h9bmxzfiilo' AND title ILIKE '%%'
-    OR description ILIKE '%x%'
-    OR (project_id = 'cmpc7yxg9000d5h9bmxzfiilo' AND title ILIKE '%%')
-```
-
-The boundary is broken and tasks from `cmpc7yxg9000d5h9bmxzfiilo` are returned to the caller.
-
----
-
-## Issue 2 — IDOR: No Authorization Check on `PATCH /api/tasks/[id]`
+## Issue 1 — IDOR: No Authorization Check on `PATCH /api/tasks/[id]`
 
 **File:** `src/app/api/tasks/[id]/route.ts` · lines 16–38  
 **Category:** Security  
@@ -86,13 +24,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   // ← add these two lines (mirrors the DELETE handler)
   const membership = await getProjectMembership(user.id, existing.projectId);
   if (!membership) return forbidden("you are not a member of this project");
-  if (!canEditTasks(membership.role)) return forbidden("viewers cannot edit tasks");
+  if (!canEditTasks(membership.role))
+    return forbidden("viewers cannot edit tasks");
 
   const body = await req.json().catch(() => null);
   const parsed = updateTaskSchema.safeParse(body);
-  if (!parsed.success) return badRequest("invalid input", parsed.error.flatten());
+  if (!parsed.success)
+    return badRequest("invalid input", parsed.error.flatten());
 
-  const task = await prisma.task.update({ where: { id }, data: parsed.data, include: { assignee: { select: { id: true, name: true, email: true } } } });
+  const task = await prisma.task.update({
+    where: { id },
+    data: parsed.data,
+    include: { assignee: { select: { id: true, name: true, email: true } } },
+  });
   return NextResponse.json({ task });
 }
 ```
@@ -123,7 +67,7 @@ curl -s -X PATCH "http://localhost:3001/api/tasks/$TASK_ID" \
 
 ---
 
-## Issue 3 — Missing `@unique` Constraint on `User.email`
+## Issue 2 — Missing `@unique` Constraint on `User.email`
 
 **File:** `prisma/schema.prisma` · line 25  
 **Category:** Data Integrity  
@@ -141,7 +85,7 @@ Also change `prisma.user.findFirst({ where: { email } })` in both `login/route.t
 
 ---
 
-## Issue 4 — N+1 Over-fetch: Loading All Task Rows Just to Count Them
+## Issue 3 — N+1 Over-fetch: Loading All Task Rows Just to Count Them
 
 **File:** `src/app/api/projects/route.ts` · lines 10–21  
 **Category:** Performance  
